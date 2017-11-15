@@ -24,6 +24,7 @@ class Scene extends React.Component {
   mouseCoords = new THREE.Vector2();
   raycaster = new THREE.Raycaster();
   ballMaterial = new THREE.MeshPhongMaterial({ color: 0x202020 });
+
   gravityConstant = -9.8;
   collisionConfiguration;
   physicsWorld;
@@ -52,6 +53,15 @@ class Scene extends React.Component {
   // Physics variables
   softBodies = [];
   softBodyHelpers = new Ammo.btSoftBodyHelpers();
+
+  dispatcher;
+  broadphase;
+  solver;
+  softBodySolver;
+
+  hinge;
+  rope;
+  armMovement = 0;
 
   shouldComponentUpdate(nextProps, nextState) {
     const { props, state } = this;
@@ -117,177 +127,186 @@ class Scene extends React.Component {
   };
 
   createObjects = async () => {
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
     // Ground
-    this.pos.set(0, -0.5, 0);
-    this.quat.set(0, 0, 0, 1);
+    pos.set(0, -0.5, 0);
+    quat.set(0, 0, 0, 1);
     const ground = this.createParalellepiped(
       40,
       1,
       40,
       0,
-      this.pos,
-      this.quat,
+      pos,
+      quat,
       new THREE.MeshPhongMaterial({ color: 0xffffff })
     );
     ground.castShadow = USE_SHADOWS;
     ground.receiveShadow = USE_SHADOWS;
-
     const texture = await ExpoTHREE.createTextureAsync({
       asset: Expo.Asset.fromModule(Files.textures.grid),
     });
-    // textureLoader.load('textures/grid.png', texture => {
+
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(40, 40);
     ground.material.map = texture;
     ground.material.needsUpdate = true;
-    // });
-    // Create soft volumes
-    const volumeMass = 15;
-    const sphereGeometry = new THREE.SphereBufferGeometry(1.5, 40, 25);
-    sphereGeometry.translate(5, 5, 0);
-    await this.createSoftVolume(sphereGeometry, volumeMass, 250);
-    const boxGeometry = new THREE.BufferGeometry().fromGeometry(
-      new THREE.BoxGeometry(1, 1, 5, 4, 4, 20)
+
+    // Ball
+    const ballMass = 1.2;
+    const ballRadius = 0.6;
+    const ball = new THREE.Mesh(
+      new THREE.SphereGeometry(ballRadius, 20, 20),
+      new THREE.MeshPhongMaterial({ color: 0x202020 })
     );
-    boxGeometry.translate(-2, 5, 0);
-    await this.createSoftVolume(boxGeometry, volumeMass, 120);
-    // Ramp
-    this.pos.set(3, 1, 0);
-    this.quat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), 30 * Math.PI / 180);
-    const obstacle = this.createParalellepiped(
-      10,
-      1,
-      4,
-      0,
-      this.pos,
-      this.quat,
-      new THREE.MeshPhongMaterial({ color: 0x606060 })
-    );
-    obstacle.castShadow = USE_SHADOWS;
-    obstacle.receiveShadow = USE_SHADOWS;
-  };
-  processGeometry = bufGeometry => {
-    // Obtain a Geometry
-    const geometry = new THREE.Geometry().fromBufferGeometry(bufGeometry);
-    // Merge the vertices so the triangle soup is converted to indexed triangles
-    const vertsDiff = geometry.mergeVertices();
-    // Convert again to BufferGeometry, indexed
-    const indexedBufferGeom = this.createIndexedBufferGeometryFromGeometry(geometry);
-    // Create index arrays mapping the indexed vertices to bufGeometry vertices
-    this.mapIndices(bufGeometry, indexedBufferGeom);
-  };
-  createIndexedBufferGeometryFromGeometry = geometry => {
-    const numVertices = geometry.vertices.length;
-    const numFaces = geometry.faces.length;
-    const bufferGeom = new THREE.BufferGeometry();
-    const vertices = new Float32Array(numVertices * 3);
-    const indices = new (numFaces * 3 > 65535 ? Uint32Array : Uint16Array)(numFaces * 3);
-    for (var i = 0; i < numVertices; i++) {
-      const p = geometry.vertices[i];
-      var i3 = i * 3;
-      vertices[i3] = p.x;
-      vertices[i3 + 1] = p.y;
-      vertices[i3 + 2] = p.z;
-    }
-    for (var i = 0; i < numFaces; i++) {
-      const f = geometry.faces[i];
-      var i3 = i * 3;
-      indices[i3] = f.a;
-      indices[i3 + 1] = f.b;
-      indices[i3 + 2] = f.c;
-    }
-    bufferGeom.setIndex(new THREE.BufferAttribute(indices, 1));
-    bufferGeom.addAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    return bufferGeom;
-  };
-  isEqual = (x1, y1, z1, x2, y2, z2) => {
-    const delta = 0.000001;
-    return Math.abs(x2 - x1) < delta && Math.abs(y2 - y1) < delta && Math.abs(z2 - z1) < delta;
-  };
-  mapIndices = (bufGeometry, { attributes, index }) => {
-    // Creates ammoVertices, ammoIndices and ammoIndexAssociation in bufGeometry
-    const vertices = bufGeometry.attributes.position.array;
-    const idxVertices = attributes.position.array;
-    const indices = index.array;
-    const numIdxVertices = idxVertices.length / 3;
-    const numVertices = vertices.length / 3;
-    bufGeometry.ammoVertices = idxVertices;
-    bufGeometry.ammoIndices = indices;
-    bufGeometry.ammoIndexAssociation = [];
-    for (let i = 0; i < numIdxVertices; i++) {
-      const association = [];
-      bufGeometry.ammoIndexAssociation.push(association);
-      const i3 = i * 3;
-      for (let j = 0; j < numVertices; j++) {
-        const j3 = j * 3;
-        if (
-          this.isEqual(
-            idxVertices[i3],
-            idxVertices[i3 + 1],
-            idxVertices[i3 + 2],
-            vertices[j3],
-            vertices[j3 + 1],
-            vertices[j3 + 2]
-          )
-        ) {
-          association.push(j3);
+    ball.castShadow = USE_SHADOWS;
+    ball.receiveShadow = USE_SHADOWS;
+    const ballShape = new Ammo.btSphereShape(ballRadius);
+    ballShape.setMargin(this.margin);
+    pos.set(-3, 2, 0);
+    quat.set(0, 0, 0, 1);
+    this.createRigidBody(ball, ballShape, ballMass, pos, quat);
+    ball.userData.physicsBody.setFriction(0.5);
+    // Wall
+    const brickMass = 0.5;
+    const brickLength = 1.2;
+    const brickDepth = 0.6;
+    const brickHeight = brickLength * 0.5;
+    const numBricksLength = 6;
+    const numBricksHeight = 8;
+    const z0 = -numBricksLength * brickLength * 0.5;
+    pos.set(0, brickHeight * 0.5, z0);
+    quat.set(0, 0, 0, 1);
+    for (let j = 0; j < numBricksHeight; j++) {
+      const oddRow = j % 2 == 1;
+      pos.z = z0;
+      if (oddRow) {
+        pos.z -= 0.25 * brickLength;
+      }
+      const nRow = oddRow ? numBricksLength + 1 : numBricksLength;
+      for (var i = 0; i < nRow; i++) {
+        let brickLengthCurrent = brickLength;
+        let brickMassCurrent = brickMass;
+        if (oddRow && (i == 0 || i == nRow - 1)) {
+          brickLengthCurrent *= 0.5;
+          brickMassCurrent *= 0.5;
+        }
+        const brick = this.createParalellepiped(
+          brickDepth,
+          brickHeight,
+          brickLengthCurrent,
+          brickMassCurrent,
+          pos,
+          quat,
+          createMaterial()
+        );
+        brick.castShadow = USE_SHADOWS;
+        brick.receiveShadow = USE_SHADOWS;
+        if (oddRow && (i == 0 || i == nRow - 2)) {
+          pos.z += 0.75 * brickLength;
+        } else {
+          pos.z += brickLength;
         }
       }
+      pos.y += brickHeight;
     }
-  };
-  createSoftVolume = async (bufferGeom, mass, pressure) => {
-    this.processGeometry(bufferGeom);
-    const volume = new THREE.Mesh(bufferGeom, new THREE.MeshPhongMaterial({ color: 0xffffff }));
-    volume.castShadow = USE_SHADOWS;
-    volume.receiveShadow = USE_SHADOWS;
-    volume.frustumCulled = false;
-    this.scene.add(volume);
-    const texture = await ExpoTHREE.createTextureAsync({
-      asset: Expo.Asset.fromModule(Files.textures.colors),
-    });
-    // textureLoader.load('textures/colors.png', texture => {
-    volume.material.map = texture;
-    volume.material.needsUpdate = true;
-    // });
-    // Volume physic object
-    const volumeSoftBody = this.softBodyHelpers.CreateFromTriMesh(
+    // The rope
+    // Rope graphic object
+    const ropeNumSegments = 10;
+    const ropeLength = 4;
+    const ropeMass = 3;
+    const ropePos = ball.position.clone();
+    ropePos.y += ballRadius;
+    const segmentLength = ropeLength / ropeNumSegments;
+    const ropeGeometry = new THREE.BufferGeometry();
+    const ropeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+    const ropePositions = [];
+    const ropeIndices = [];
+    for (var i = 0; i < ropeNumSegments + 1; i++) {
+      ropePositions.push(ropePos.x, ropePos.y + i * segmentLength, ropePos.z);
+    }
+    for (var i = 0; i < ropeNumSegments; i++) {
+      ropeIndices.push(i, i + 1);
+    }
+    ropeGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array(ropeIndices), 1));
+    ropeGeometry.addAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array(ropePositions), 3)
+    );
+    ropeGeometry.computeBoundingSphere();
+    this.rope = new THREE.LineSegments(ropeGeometry, ropeMaterial);
+    this.rope.castShadow = USE_SHADOWS;
+    this.rope.receiveShadow = USE_SHADOWS;
+    this.scene.add(this.rope);
+    // Rope physic object
+    const softBodyHelpers = new Ammo.btSoftBodyHelpers();
+    const ropeStart = new Ammo.btVector3(ropePos.x, ropePos.y, ropePos.z);
+    const ropeEnd = new Ammo.btVector3(ropePos.x, ropePos.y + ropeLength, ropePos.z);
+    const ropeSoftBody = softBodyHelpers.CreateRope(
       this.physicsWorld.getWorldInfo(),
-      bufferGeom.ammoVertices,
-      bufferGeom.ammoIndices,
-      bufferGeom.ammoIndices.length / 3,
+      ropeStart,
+      ropeEnd,
+      ropeNumSegments - 1,
+      0
+    );
+    const sbConfig = ropeSoftBody.get_m_cfg();
+    sbConfig.set_viterations(10);
+    sbConfig.set_piterations(10);
+    ropeSoftBody.setTotalMass(ropeMass, false);
+    Ammo.castObject(ropeSoftBody, Ammo.btCollisionObject)
+      .getCollisionShape()
+      .setMargin(this.margin * 3);
+    this.physicsWorld.addSoftBody(ropeSoftBody, 1, -1);
+    this.rope.userData.physicsBody = ropeSoftBody;
+    // Disable deactivation
+    ropeSoftBody.setActivationState(4);
+    // The base
+    const armMass = 2;
+    const armLength = 3;
+    const pylonHeight = ropePos.y + ropeLength;
+    const baseMaterial = new THREE.MeshPhongMaterial({ color: 0x606060 });
+    pos.set(ropePos.x, 0.1, ropePos.z - armLength);
+    quat.set(0, 0, 0, 1);
+    const base = this.createParalellepiped(1, 0.2, 1, 0, pos, quat, baseMaterial);
+    base.castShadow = USE_SHADOWS;
+    base.receiveShadow = USE_SHADOWS;
+    pos.set(ropePos.x, 0.5 * pylonHeight, ropePos.z - armLength);
+    const pylon = this.createParalellepiped(0.4, pylonHeight, 0.4, 0, pos, quat, baseMaterial);
+    pylon.castShadow = USE_SHADOWS;
+    pylon.receiveShadow = USE_SHADOWS;
+    pos.set(ropePos.x, pylonHeight + 0.2, ropePos.z - 0.5 * armLength);
+    const arm = this.createParalellepiped(
+      0.4,
+      0.4,
+      armLength + 0.4,
+      armMass,
+      pos,
+      quat,
+      baseMaterial
+    );
+    arm.castShadow = USE_SHADOWS;
+    arm.receiveShadow = USE_SHADOWS;
+    // Glue the rope extremes to the ball and the arm
+    const influence = 1;
+    ropeSoftBody.appendAnchor(0, ball.userData.physicsBody, true, influence);
+    ropeSoftBody.appendAnchor(ropeNumSegments, arm.userData.physicsBody, true, influence);
+    // Hinge constraint to move the arm
+    const pivotA = new Ammo.btVector3(0, pylonHeight * 0.5, 0);
+    const pivotB = new Ammo.btVector3(0, -0.2, -armLength * 0.5);
+    const axis = new Ammo.btVector3(0, 1, 0);
+    this.hinge = new Ammo.btHingeConstraint(
+      pylon.userData.physicsBody,
+      arm.userData.physicsBody,
+      pivotA,
+      pivotB,
+      axis,
+      axis,
       true
     );
-    const sbConfig = volumeSoftBody.get_m_cfg();
-    sbConfig.set_viterations(40);
-    sbConfig.set_piterations(40);
-    // Soft-soft and soft-rigid collisions
-    sbConfig.set_collisions(0x11);
-    // Friction
-    sbConfig.set_kDF(0.1);
-    // Damping
-    sbConfig.set_kDP(0.01);
-    // Pressure
-    sbConfig.set_kPR(pressure);
-    // Stiffness
-    volumeSoftBody
-      .get_m_materials()
-      .at(0)
-      .set_m_kLST(0.9);
-    volumeSoftBody
-      .get_m_materials()
-      .at(0)
-      .set_m_kAST(0.9);
-    volumeSoftBody.setTotalMass(mass, false);
-    Ammo.castObject(volumeSoftBody, Ammo.btCollisionObject)
-      .getCollisionShape()
-      .setMargin(this.margin);
-    this.physicsWorld.addSoftBody(volumeSoftBody, 1, -1);
-    volume.userData.physicsBody = volumeSoftBody;
-    // Disable deactivation
-    volumeSoftBody.setActivationState(4);
-    this.softBodies.push(volume);
+    this.physicsWorld.addConstraint(this.hinge, true);
   };
+
   createParalellepiped = (sx, sy, sz, mass, pos, quat, material) => {
     const threeObject = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz, 1, 1, 1), material);
     const shape = new Ammo.btBoxShape(new Ammo.btVector3(sx * 0.5, sy * 0.5, sz * 0.5));
@@ -378,31 +397,19 @@ class Scene extends React.Component {
     window.document.addEventListener(
       'touchstart',
       event => {
-        const { width, height } = Dimensions.get('window');
-        const { locationX: x, locationY: y } = event;
-        const xPos = x / width * 2 - 1;
-        const yPos = -(y / height) * 2 + 1;
-        this.mouseCoords.set(xPos, yPos);
+        if (event.pageX < Dimensions.get('window').width / 2) {
+          this.armMovement = -1;
+        } else {
+          this.armMovement = 1;
+        }
+      },
+      false
+    );
 
-        this.raycaster.setFromCamera(this.mouseCoords, this.camera);
-
-        // Creates a ball and throws it
-        var ballMass = 64;
-        var ballRadius = 0.4;
-
-        var ball = new THREE.Mesh(new THREE.SphereGeometry(ballRadius, 14, 10), this.ballMaterial);
-        ball.castShadow = USE_SHADOWS;
-        ball.receiveShadow = USE_SHADOWS;
-        var ballShape = new Ammo.btSphereShape(ballRadius);
-        ballShape.setMargin(this.margin);
-        this.pos.copy(this.raycaster.ray.direction);
-        this.pos.add(this.raycaster.ray.origin);
-        this.quat.set(0, 0, 0, 1);
-        var ballBody = this.createRigidBody(ball, ballShape, ballMass, this.pos, this.quat);
-
-        this.pos.copy(this.raycaster.ray.direction);
-        this.pos.multiplyScalar(64 * event.touches.length);
-        ballBody.setLinearVelocity(new Ammo.btVector3(this.pos.x, this.pos.y, this.pos.z));
+    window.document.addEventListener(
+      'touchend',
+      event => {
+        this.armMovement = 0;
       },
       false
     );
@@ -431,50 +438,31 @@ class Scene extends React.Component {
   };
 
   //http://bulletphysics.org/mediawiki-1.5.8/index.php/Stepping_The_World
-  fixedTimeStep = 1 / 60;
-  maxSubSteps = 10;
+  fixedTimeStep = 1 / 30;
+  maxSubSteps = 1;
   updatePhysics = deltaTime => {
     // Step world
     this.physicsWorld.stepSimulation(deltaTime, this.maxSubSteps, this.fixedTimeStep);
 
-    // Update soft volumes
-    for (var i = 0, il = this.softBodies.length; i < il; i++) {
-      const volume = this.softBodies[i];
-      const geometry = volume.geometry;
-      const softBody = volume.userData.physicsBody;
-      const volumePositions = geometry.attributes.position.array;
-      const volumeNormals = geometry.attributes.normal.array;
-      const association = geometry.ammoIndexAssociation;
-      const numVerts = association.length;
-      const nodes = softBody.get_m_nodes();
-      for (let j = 0; j < numVerts; j++) {
-        const node = nodes.at(j);
-        const nodePos = node.get_m_x();
-        const x = nodePos.x();
-        const y = nodePos.y();
-        const z = nodePos.z();
-        const nodeNormal = node.get_m_n();
-        const nx = nodeNormal.x();
-        const ny = nodeNormal.y();
-        const nz = nodeNormal.z();
-        const assocVertex = association[j];
-        for (let k = 0, kl = assocVertex.length; k < kl; k++) {
-          let indexVertex = assocVertex[k];
-          volumePositions[indexVertex] = x;
-          volumeNormals[indexVertex] = nx;
-          indexVertex++;
-          volumePositions[indexVertex] = y;
-          volumeNormals[indexVertex] = ny;
-          indexVertex++;
-          volumePositions[indexVertex] = z;
-          volumeNormals[indexVertex] = nz;
-        }
-      }
-      geometry.attributes.position.needsUpdate = true;
-      geometry.attributes.normal.needsUpdate = true;
+    // Hinge control
+    this.hinge.enableAngularMotor(true, 1.5 * this.armMovement, 50);
+    // Step world
+    // Update rope
+    const softBody = this.rope.userData.physicsBody;
+    const ropePositions = this.rope.geometry.attributes.position.array;
+    const numVerts = ropePositions.length / 3;
+    const nodes = softBody.get_m_nodes();
+    let indexFloat = 0;
+    for (var i = 0; i < numVerts; i++) {
+      const node = nodes.at(i);
+      const nodePos = node.get_m_x();
+      ropePositions[indexFloat++] = nodePos.x();
+      ropePositions[indexFloat++] = nodePos.y();
+      ropePositions[indexFloat++] = nodePos.z();
     }
+    this.rope.geometry.attributes.position.needsUpdate = true;
     // Update rigid bodies
-    for (var i = 0, il = this.rigidBodies.length; i < il; i++) {
+    for (let i = 0, il = this.rigidBodies.length; i < il; i++) {
       const objThree = this.rigidBodies[i];
       const objPhys = objThree.userData.physicsBody;
       const ms = objPhys.getMotionState();
