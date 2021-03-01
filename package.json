@@ -15,7 +15,7 @@
     "react": "16.1.1",
     "react-native": "https://github.com/expo/react-native/archive/sdk-22.0.2.tar.gz",
     "react-native-console-time-polyfill": "^0.0.6",
-    "three": "^0.88.0"
+    "three": "^0.125.0"
   },
   "devDependencies": {
     "eslint": "^4.18.2",
